@@ -9,9 +9,14 @@
 #define CLASS_NAME  "my_class"
 #define BUF_SIZE    1024
 
-/* СТРУКТУРА ДАННЫХ (TODO)
-  TODO: Создать структуру для хранения буфера, указателей и т.д. 
-  Используем mutex lock для защиты от одновременного доступа*/
+/* СТРУКТУРА ДАННЫХ */
+struct my_device_data {
+    unsigned char buffer[BUF_SIZE];
+    int head;
+    int tail;
+    struct mutex lock;
+    struct cdev cdev;
+};
 
 /* ПРОТОТИПЫ ФУНКЦИЙ (TODO)
    Объявляем все функции */
