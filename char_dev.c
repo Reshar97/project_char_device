@@ -25,7 +25,6 @@ struct ring_buffer_dev {
     int write_ptr;
     int bytes_in_buffer;
     struct mutex lock;
-    struct cdev cdev;
 } *my_device_data; 
 
 /* ПРОТОТИПЫ ФУНКЦИЙ */
@@ -96,30 +95,21 @@ static int __init char_dev_demo_init(void) {
     return 0;
 }
 
-    if (/* TODO: Проверка, что все создалось успешно */) {
-        printk(KERN_INFO "Driver: Устройство /dev/%s создано\n", DEVICE_NAME);
-        return 0;
-    } else {
-        // TODO: Реализовать очистку ресурсов в случае ошибки
-        return -1;
-    }
-}
 
-/* ВЫГРУЗКА МОДУЛЯ (TODO)
- Эта функция вызывается при команде 'rmmod'.
- TODO: Освободить память и отменить регистрацию. */
+/* ВЫГРУЗКА МОДУЛЯ */
 static void __exit char_dev_demo_exit(void) {
-    printk(KERN_INFO "Driver: Выгрузка (TODO)\n");
-
-    // TODO: Освободить ресурсы в обратном порядке
+    device_destroy(my_class, MKDEV(major_number, 0));
+    class_destroy(my_class);
+    unregister_chrdev(major_number, DEVICE_NAME);
+    kfree(my_device_data);
+    printk(KERN_INFO "RingBuffer: Модуль выгружен. Ресурсы освобождены.\n");
 }
 
-/* РЕАЛИЗАЦИЯ ФУНКЦИЙ (TODO)
-   Здесь будет логика работы драйвера. */
-
-// Вызывается при открытии файла устройства
+/* РЕАЛИЗАЦИЯ ФУНКЦИЙ */
+// Открываем устройство
 static int dev_open(struct inode *inodep, struct file *filep){
-    printk(KERN_INFO "Driver: Устройство открыто\n");
+    filep->private_data = my_device_data;
+    printk(KERN_INFO "RingBuffer: Устройство открыто\n");
     return 0;
 }
 
@@ -129,18 +119,49 @@ static int dev_release(struct inode *inodep, struct file *filep){
     return 0;
 }
 
+// Вызывается, когда пользователь пишет в /dev/my_buffer
+static ssize_t dev_write(struct file *filep, const char *buffer, size_t len, loff_t *offset){
+    struct ring_buffer_dev *data = filep->private_data;
+    int bytes_to_write = len;
+    int bytes_written = 0;
+
+    if (mutex_lock_interruptible(&data->lock))
+        return -ERESTARTSYS;
+
+    while (bytes_to_write > 0) {
+        int free_space = BUF_SIZE - data->bytes_in_buffer;
+        if (free_space == 0) break; // Буфер полон, выходим и возвращаем что успели записать
+
+        // Проверяем сколько байт можем записать до конца буфера
+        int space_to_end = BUF_SIZE - data->write_ptr;
+
+        // Проверяем сколько байт реально запишем за один заход (минимум из свободного места и места до конца)
+        int bytes_this_pass = min(bytes_to_write, min(free_space, space_to_end));
+
+        // Копируем данные из пространства пользователся в буфер ядра
+        if (copy_from_user(data->buffer + data->write_ptr, buffer + bytes_written, bytes_this_pass)) {
+            mutex_unlock(&data->lock);
+            return -EFAULT;
+        }
+
+        data->write_ptr = (data->write_ptr + bytes_this_pass) % BUF_SIZE;
+        data->bytes_in_buffer += bytes_this_pass;
+        bytes_written += bytes_this_pass;
+        bytes_to_write -= bytes_this_pass;
+
+        printk(KERN_INFO "RingBuffer: Записано %d байт. Всего в буфере: %d\n", bytes_this_pass, data->bytes_in_buffer);
+    }
+    
+    mutex_unlock(&data->lock);
+    return bytes_written;
+    
+}
+
 // Вызывается, когда пользователь читает из /dev/my_buffer
 static ssize_t dev_read(struct file *filep, char *buffer, size_t len, loff_t *offset){
     printk(KERN_INFO "Driver: Операция чтения (TODO)\n");
     // TODO: Реализовать чтение данных из буфера
     return 0;
-}
-
-// Вызывается, когда пользователь пишет в /dev/my_buffer
-static ssize_t dev_write(struct file *filep, const char *buffer, size_t len, loff_t *offset){
-    printk(KERN_INFO "Driver: Операция записи (TODO). Получено %zu байт\n", len);
-    // TODO: Реализовать запись данных в буфер
-    return len; // Пока просто подтверждаем получение
 }
 
 // Вызывается для команд ioctl
