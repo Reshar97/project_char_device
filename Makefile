@@ -1,19 +1,21 @@
-MOD_DIR := /lib/modules/$(shell uname -r)/build
-DRV_NAME := char_dev 
+KDIR := /lib/modules/$(shell uname -r)/build
+DRV_NAME := char_dev
+PWD := $(shell pwd)
 
-obj-m += $(DRV_NAME).o
+obj-m := $(DRV_NAME).o
 
 all:
-	make -C $(MOD_DIR) M=$(PWD) modules
+	$(MAKE) -C $(KDIR) M=$(PWD) modules
 
 clean:
-	make -C $(MOD_DIR) M=$(PWD) clean
+	$(MAKE) -C $(KDIR) M=$(PWD) clean
+	rm -f *.sumvers *.ko *.mod *.mod*
 
 install:
-	sudo insmod $(DRV_NAME).ko
+	insmod $(DRV_NAME).ko
 
 uninstall:
-	sudo rmmod $(DRV_NAME)
+	rmmod $(DRV_NAME)
 
 format:
 	clang-format *.c
