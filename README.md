@@ -19,19 +19,19 @@ sudo apt-get install build-essential linux-headers-$(uname -r)
 
 Команды:
 
-    Сборка модуля:
+Сборка модуля:
 
     make
 
-    Загрузка модуля в ядро:
+Загрузка модуля в ядро:
 
     sudo make install
 
-    Выгрузка модуля из ядра:
+Выгрузка модуля из ядра:
 
     sudo make uninstall
 
-    Очистка проекта:
+Очистка проекта:
 
     make clean
 
@@ -39,15 +39,15 @@ sudo apt-get install build-essential linux-headers-$(uname -r)
 
 После загрузки модуля в системе появляется устройство /dev/my_buffer.
 
-    Запись данных:
+Запись данных:
 
     echo "Привет, ядро!" > /dev/my_buffer
 
-    Чтение данных:
+Чтение данных:
 
     cat /dev/my_buffer
 
-    Проверка логов ядра (для отладки):
+Проверка логов ядра (для отладки):
 
     dmesg | tail -n 20
 
@@ -55,11 +55,11 @@ sudo apt-get install build-essential linux-headers-$(uname -r)
 
 Драйвер предоставляет интерфейс для мониторинга состояния буфера.
 
-    Команда:
+Команда:
 
     cat /proc/my_buffer
 
-    Пример вывода:
+Пример вывода:
 
     --- Состояние кольцевого буфера ---
     Занято: 15 байт
@@ -74,11 +74,11 @@ sudo apt-get install build-essential linux-headers-$(uname -r)
 
 Компиляция тестового приложения:
 
-gcc test_buffer.c -o test_buffer
+    gcc test_buffer.c -o test_buffer
 
 Запуск:
 
-./test_buffer
+    ./test_buffer
 
 В консоли доступны команды: write, read, size, used, free, clear.
 Так же на экран будет выведена подсказка по основным командам в консоли:
