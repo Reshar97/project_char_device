@@ -1,0 +1,6 @@
+test_buffer
+
+*.o
+*.ko
+*.mod.c
+.sumvers

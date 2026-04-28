@@ -12,10 +12,11 @@ clean:
 	rm -f *.sumvers *.ko *.mod *.mod*
 
 install:
-	insmod $(DRV_NAME).ko
+	@sudo insmod $(DRV_NAME).ko
+	@sudo chmod 666 /dev/my_buffer
 
 uninstall:
-	rmmod $(DRV_NAME)
+	@sudo rmmod $(DRV_NAME)
 
 format:
 	clang-format *.c

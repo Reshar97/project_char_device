@@ -8,18 +8,16 @@
 #include <linux/ioctl.h>
 #include <linux/slab.h>
 #include <linux/mutex.h>
+#include <linux/proc_fs.h>
+#include <linux/seq_file.h>
+
+#include "my_buffer_ioctl.h"
 
 #define DEVICE_NAME "my_buffer"
 #define CLASS_NAME  "my_class"
 #define BUF_SIZE    1024
 
-/* Уникальные коды команд для ioctl */
-#define IOCTL_GETBUFFER_SIZE _IOR('b', 1, int32_t*)
-#define IOCTL_GET_USED_SPACE _IOR('b', 2, int32_t*)
-#define IOCTL_GET_FREE_SPACE _IOR('b', 3, int32_t*)
-#define IOCTL_CLEAR_BUFFER   _IO('b', 4)
-
-/* СТРУКТУРА ДАННЫХ */
+/* Структура данных */
 struct ring_buffer_dev {
     unsigned char buffer[BUF_SIZE];
     size_t read_ptr;
@@ -29,14 +27,15 @@ struct ring_buffer_dev {
     struct cdev cdev;
 } *my_device_data; 
 
-/* ПРОТОТИПЫ ФУНКЦИЙ */
+/* Прототипы функций */
 static int      dev_open(struct inode *, struct file *);
 static int      dev_release(struct inode *, struct file *);
 static ssize_t  dev_read(struct file *, char __user *, size_t, loff_t *);
 static ssize_t  dev_write(struct file *, const char __user *, size_t, loff_t *);
 static long     dev_ioctl(struct file *, unsigned int, unsigned long);
+static int      my_proc_show(struct seq_file *m, void *v);
 
-/* ФАЙЛОВЫЕ ОПЕРАЦИИ */
+/* Файловые операции */
 static struct file_operations fops = {
     .owner   = THIS_MODULE,
     .open    = dev_open,
@@ -46,16 +45,17 @@ static struct file_operations fops = {
     .release = dev_release,
 };
 
-/* ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ */
-static int major_number;
+/* Глобальные переменные */
+static dev_t dev_num;
 static struct class* my_class = NULL;
 static struct device* my_device = NULL;
+static struct proc_dir_entry *proc_entry;
 
-/* ИНИЦИАЛИЗАЦИЯ МОДУЛЯ */
-static int __init char_dev_demo_init(void) {
+/* Инициализация модуля */
+static int __init char_dev_init(void) {
     printk(KERN_INFO "RingBuffer: Инициализация \n");
 
-    /* Выделяем память только под структуру */
+    /* Выделяем память под структуру */
     my_device_data = kzalloc(sizeof(*my_device_data), GFP_KERNEL);
     if (!my_device_data) {
         return -ENOMEM;
@@ -63,73 +63,79 @@ static int __init char_dev_demo_init(void) {
 
     mutex_init(&my_device_data->lock);
 
-    major_number = register_chrdev(0, DEVICE_NAME, &fops);
-    if (major_number < 0) {
-        kfree(my_device_data);
-        printk(KERN_ALERT "RingBuffer: Ошибка регистрации\n");
-        return major_number;
-    }
-
-    my_class = class_create(CLASS_NAME);
-    if (IS_ERR(my_class)) {
-        unregister_chrdev(major_number, DEVICE_NAME);
-        kfree(my_device_data);
-        return PTR_ERR(my_class);
-    }
-
-    /* Инициализируем cdev */
-    cdev_init(&my_device_data->cdev, &fops);
-    my_device_data->cdev.owner = THIS_MODULE;
-    if (cdev_add(&my_device_data->cdev, MKDEV(major_number, 0), 1)) {
-        class_destroy(my_class);
-        unregister_chrdev(major_number, DEVICE_NAME);
+    /* Регистрируем номера устройств динамически */
+    if (alloc_chrdev_region(&dev_num, 0, 1, DEVICE_NAME) < 0) {
         kfree(my_device_data);
         return -1;
     }
 
-    /* Передаем указатель на устройство (&my_device_data->cdev) */
-    my_device = device_create(my_class, NULL, MKDEV(major_number, 0), &my_device_data->cdev, DEVICE_NAME);
+    /* Инициализируем и добавляем cdev */
+    cdev_init(&my_device_data->cdev, &fops);
+    my_device_data->cdev.owner = THIS_MODULE;
+    if (cdev_add(&my_device_data->cdev, dev_num, 1) < 0) {
+        unregister_chrdev_region(dev_num, 1);
+        kfree(my_device_data);
+        return -1;
+    }
+
+    my_class = class_create(CLASS_NAME);
+    if (IS_ERR(my_class)) {
+        cdev_del(&my_device_data->cdev);
+        unregister_chrdev_region(dev_num, 1);
+        kfree(my_device_data);
+        return PTR_ERR(my_class);
+    }
+
+    /* Создаем устройство */
+    my_device = device_create(my_class, NULL, dev_num, NULL, DEVICE_NAME);
     if (IS_ERR(my_device)) {
         class_destroy(my_class);
-        unregister_chrdev(major_number, DEVICE_NAME);
+        cdev_del(&my_device_data->cdev);
+        unregister_chrdev_region(dev_num, 1);
         kfree(my_device_data);
         return PTR_ERR(my_device);
     }
 
-    printk(KERN_INFO "RingBuffer: Устройство /dev/%s создано\n", DEVICE_NAME);
+    /* Регистрация в /proc через seq_file */
+    proc_entry = proc_create_single_data(DEVICE_NAME, 0444, NULL, my_proc_show, my_device_data);
+    
+    printk(KERN_INFO "RingBuffer: Устройство /dev/%s и /proc/%s созданы\n", DEVICE_NAME, DEVICE_NAME);
     return 0;
 }
 
-
-/* ВЫГРУЗКА МОДУЛЯ */
-static void __exit char_dev_demo_exit(void) {
-    device_destroy(my_class, MKDEV(major_number, 0));
+/* Выгрузка модуля */
+static void __exit char_dev_exit(void) {
+    if (proc_entry) {
+        proc_remove(proc_entry);
+    }
+    
+    device_destroy(my_class, dev_num);
     class_destroy(my_class);
-    unregister_chrdev(major_number, DEVICE_NAME);
     cdev_del(&my_device_data->cdev);
+    unregister_chrdev_region(dev_num, 1);
     kfree(my_device_data);
+    
     printk(KERN_INFO "RingBuffer: Модуль выгружен. Ресурсы освобождены.\n");
 }
 
-/* РЕАЛИЗАЦИЯ ФУНКЦИЙ */
-// Открываем устройство
+/* Реализация функций драйвера
+ * Открываем устройство */
 static int dev_open(struct inode *inodep, struct file *filep){
     filep->private_data = my_device_data;
+    printk(KERN_INFO "RingBuffer: Устройство открыто \n");
     nonseekable_open(inodep, filep); 
-    printk(KERN_INFO "RingBuffer: Устройство открыто\n");
     return 0;
 }
 
-// Вызывается при закрытии файла устройства
+/* Закрываем устройство */
 static int dev_release(struct inode *inodep, struct file *filep){
-    printk(KERN_INFO "RingBuffer: Устройство закрыто\n");
+    printk(KERN_INFO "RingBuffer: Устройство закрыто \n");
     return 0;
 }
 
-// Вызывается, когда пользователь пишет в /dev/my_buffer
+/* Пишем в буфер */
 static ssize_t dev_write(struct file *filep, const char __user *buffer, size_t len, loff_t *offset){
     struct ring_buffer_dev *data = filep->private_data;
-    
     size_t bytes_to_write = len;
     size_t bytes_written = 0;
 
@@ -139,7 +145,6 @@ static ssize_t dev_write(struct file *filep, const char __user *buffer, size_t l
     while (bytes_to_write > 0 && data->bytes_in_buffer < BUF_SIZE) {
         size_t free_space = BUF_SIZE - data->bytes_in_buffer;
         size_t space_to_end = BUF_SIZE - data->write_ptr;
-        
         size_t bytes_this_pass = min(bytes_to_write, min(free_space, space_to_end));
 
         if (copy_from_user(data->buffer + data->write_ptr, buffer + bytes_written, bytes_this_pass)) {
@@ -152,32 +157,25 @@ static ssize_t dev_write(struct file *filep, const char __user *buffer, size_t l
         bytes_written += bytes_this_pass;
         bytes_to_write -= bytes_this_pass;
 
-        printk(KERN_INFO "RingBuffer: Записано %zu байт. Всего в буфере: %zu\n", bytes_this_pass, data->bytes_in_buffer);
-        
-        if (data->bytes_in_buffer == BUF_SIZE)
-            break;
+        printk(KERN_INFO"RingBuffer: Записано %zu байт. Всего в буфере: %zu\n", bytes_this_pass, data->bytes_in_buffer);
     }
     
     mutex_unlock(&data->lock);
-    
-    // Возвращаем -ENOSPC (No space), если ничего не записали из-за переполнения
-    return bytes_written ? bytes_written : -ENOSPC; 
+    return bytes_written; 
 }
 
-// Вызывается, когда пользователь читает из /dev/my_buffer
+/* Читаем из буфера */
 static ssize_t dev_read(struct file *filep, char __user *buffer, size_t len, loff_t *offset){
     struct ring_buffer_dev *data = filep->private_data;
     
     if (mutex_lock_interruptible(&data->lock))
         return -ERESTARTSYS;
 
-     size_t available = data->bytes_in_buffer;
-     size_t to_read = min(len, available);    
+     size_t to_read = min(len, data->bytes_in_buffer);    
      size_t bytes_read = 0; 
 
-     while (bytes_read < to_read && data->bytes_in_buffer > 0) {
+     while (bytes_read < to_read) {
          size_t data_to_end = BUF_SIZE - data->read_ptr;
-         
          size_t bytes_this_pass = min(to_read - bytes_read, data_to_end);
  
          if (copy_to_user(buffer + bytes_read, data->buffer + data->read_ptr, bytes_this_pass)) {
@@ -188,17 +186,15 @@ static ssize_t dev_read(struct file *filep, char __user *buffer, size_t len, lof
          data->read_ptr = (data->read_ptr + bytes_this_pass) % BUF_SIZE;
          data->bytes_in_buffer -= bytes_this_pass;
          bytes_read += bytes_this_pass;
- 
-         printk(KERN_INFO "RingBuffer: Прочитано %zu байт. Осталось в буфере: %zu\n", bytes_this_pass, data->bytes_in_buffer);
+
+        printk(KERN_INFO "RingBuffer: Прочитано %zu байт. Осталось в буфере: %zu\n", bytes_this_pass, data->bytes_in_buffer);
      }
      
      mutex_unlock(&data->lock);
-     
-     // Возвращаем -EAGAIN (Try again), если буфер был пуст и ничего не прочитали
      return bytes_read; 
 }
 
-// Вызывается для команд ioctl
+/* Функции ioctl */
 static long dev_ioctl(struct file *filep, unsigned int cmd, unsigned long arg){
      struct ring_buffer_dev *data = filep->private_data;
      int32_t val;
@@ -206,33 +202,46 @@ static long dev_ioctl(struct file *filep, unsigned int cmd, unsigned long arg){
      switch(cmd) {
          case IOCTL_GETBUFFER_SIZE:
              val = BUF_SIZE;
-             if (copy_to_user((int32_t __user *)arg, &val, sizeof(val))) return -EFAULT;
              break;
          case IOCTL_GET_USED_SPACE:
              val = (int32_t)data->bytes_in_buffer;
-             if (copy_to_user((int32_t __user *)arg, &val, sizeof(val))) return -EFAULT;
              break;
          case IOCTL_GET_FREE_SPACE:
              val = (int32_t)(BUF_SIZE - data->bytes_in_buffer);
-             if (copy_to_user((int32_t __user *)arg, &val, sizeof(val))) return -EFAULT;
              break;
          case IOCTL_CLEAR_BUFFER:
-             mutex_lock(&data->lock);
-             data->read_ptr = 0;
-             data->write_ptr = 0;
-             data->bytes_in_buffer = 0;
+             mutex_lock(&data->lock); 
+             data->read_ptr = data->write_ptr = data->bytes_in_buffer = 0;
              mutex_unlock(&data->lock);
-             break;
+             printk(KERN_INFO "RingBuffer: Буфер очищен через IOCTL\n");
+             return 0;
          default:
               return -ENOTTY;
       }
+      
+      if (copy_to_user((int32_t __user *)arg, &val, sizeof(val)))
+          return -EFAULT;
+          
       return 0;
 }
 
-module_init(char_dev_demo_init);
-module_exit(char_dev_demo_exit);
+/* Реализация функции для /proc */
+static int my_proc_show(struct seq_file *m, void *v) {
+     struct ring_buffer_dev *data = (struct ring_buffer_dev *)m->private;
+     
+     seq_printf(m, "--- Состояние кольцевого буфера ---\n");
+     if (mutex_lock_interruptible(&data->lock)) return -ERESTARTSYS;
+     seq_printf(m, "Занято: %zu\nСвободно: %zu\nRead Ptr: %zu\nWrite Ptr: %zu\n",
+                data->bytes_in_buffer, BUF_SIZE - data->bytes_in_buffer,
+                data->read_ptr, data->write_ptr);
+     mutex_unlock(&data->lock);
+     return 0;
+}
+
+module_init(char_dev_init);
+module_exit(char_dev_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Anton Zubin");
 MODULE_DESCRIPTION("Драйвер кольцевого буфера");
-MODULE_VERSION("0.4");
+MODULE_VERSION("1.0");
